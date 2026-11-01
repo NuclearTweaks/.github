@@ -36,3 +36,5 @@ runs:
         fi
         "$ldid_path" -v 2>&1 | head -1 || true
         echo "LDID_BIN=$ldid_path" >> "$GITHUB_ENV"
+        # theos invokes plain `ldid` on PATH during its own signing pass
+        echo "$GITHUB_WORKSPACE/.local-bin" >> "$GITHUB_PATH"
