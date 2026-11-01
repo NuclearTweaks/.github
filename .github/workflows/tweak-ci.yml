@@ -82,7 +82,7 @@ jobs:
 
       - name: Open/update release PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.NUCLEAR_BOT_TOKEN || secrets.GITHUB_TOKEN }}
           NEXT: ${{ steps.version.outputs.next }}
           CUR: ${{ steps.version.outputs.current }}
           LATEST: ${{ steps.version.outputs.latest }}
