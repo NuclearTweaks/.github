@@ -67,7 +67,7 @@ jobs:
     name: publish release + APT
     needs: release-gate
     if: needs.release-gate.outputs.publish == 'true'
-    runs-on: macos-15
+    runs-on: [self-hosted, nuclear-mac]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -119,7 +119,7 @@ jobs:
   release-pr:
     name: build + open release PR
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: macos-15
+    runs-on: [self-hosted, nuclear-mac]
     steps:
       - uses: actions/checkout@v4
         with:
