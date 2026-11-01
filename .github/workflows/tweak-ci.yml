@@ -144,6 +144,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
+          git fetch -q --tags --force origin   # publish job may have tagged during this run
           latest_tag="$(git tag -l 'v*' --sort=-v:refname | head -n1 || true)"
           tag_ver="${latest_tag#v}"
           ctrl_ver="$(awk -F': *' '/^Version:/{gsub(/ /,"",$2); print $2; exit}' control)"
