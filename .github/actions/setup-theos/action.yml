@@ -22,8 +22,8 @@ runs:
     - name: Install hash-agile ldid (Procursus fork)
       shell: bash
       run: |
-        mkdir -p "$GITHUB_WORKSPACE/.local-bin"
-        ldid_path="$GITHUB_WORKSPACE/.local-bin/ldid"
+        mkdir -p "$RUNNER_TEMP/.local-bin"
+        ldid_path="$RUNNER_TEMP/.local-bin/ldid"
         if curl -fsSL -o "$ldid_path" "https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_macosx_$(uname -m)" \
            && chmod +x "$ldid_path" \
            && brew list libplist >/dev/null 2>&1 || brew install libplist openssl@3 \
@@ -37,4 +37,4 @@ runs:
         "$ldid_path" -v 2>&1 | head -1 || true
         echo "LDID_BIN=$ldid_path" >> "$GITHUB_ENV"
         # theos invokes plain `ldid` on PATH during its own signing pass
-        echo "$GITHUB_WORKSPACE/.local-bin" >> "$GITHUB_PATH"
+        echo "$RUNNER_TEMP/.local-bin" >> "$GITHUB_PATH"
