@@ -82,6 +82,7 @@ jobs:
 
       - name: Open/update release PR
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT: ${{ steps.version.outputs.next }}
           CUR: ${{ steps.version.outputs.current }}
           LATEST: ${{ steps.version.outputs.latest }}
@@ -146,6 +147,8 @@ jobs:
           ls -l packages/
 
       - name: Tag + GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           pkg="$(awk -F': *' '/^Package:/{print $2; exit}' control)"
@@ -163,10 +166,11 @@ jobs:
 
       - name: Trigger APT repo rebuild
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BOT_PAT: ${{ secrets.NUCLEAR_BOT_TOKEN }}
         run: |
           set -uo pipefail
-          tok="${BOT_PAT:-$GITHUB_TOKEN}"
+          tok="${BOT_PAT:-$GH_TOKEN}"
           if gh api -X POST "repos/$ORG/$APT_REPO/dispatches" \
                -H "Authorization: Bearer $tok" \
                -f event_type=tweak-published \
