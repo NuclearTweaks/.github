@@ -1,0 +1,38 @@
+name: setup-theos
+description: >-
+  theos (+ recursive submodules: logos, headers, rootless scheme, CydiaSubstrate
+  .tbd stubs) and a hash-agile (Procursus fork) ldid. Sets LDID_BIN.
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      id: theos
+      with:
+        path: ~/theos
+        key: theos-v1-${{ runner.arch }}-${{ github.run_id }}
+        restore-keys: theos-v1-${{ runner.arch }}-
+    - name: Clone theos (only when cache did not restore it)
+      shell: bash
+      run: |
+        if [ ! -d "$HOME/theos/.git" ]; then
+          rm -rf "$HOME/theos"
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$HOME/theos"
+        fi
+        ls "$HOME/theos/vendor/mod/rootless" >/dev/null   # fail fast if submodules missing
+    - name: Install hash-agile ldid (Procursus fork)
+      shell: bash
+      run: |
+        mkdir -p "$GITHUB_WORKSPACE/.local-bin"
+        ldid_path="$GITHUB_WORKSPACE/.local-bin/ldid"
+        if curl -fsSL -o "$ldid_path" "https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_macosx_$(uname -m)" \
+           && chmod +x "$ldid_path" \
+           && brew list libplist >/dev/null 2>&1 || brew install libplist openssl@3 \
+           && "$ldid_path" -h >/dev/null 2>&1; then
+          :
+        else
+          echo "Procursus ldid unusable; falling back to brew ldid"
+          brew install ldid
+          ldid_path="$(command -v ldid)"
+        fi
+        "$ldid_path" -v 2>&1 | head -1 || true
+        echo "LDID_BIN=$ldid_path" >> "$GITHUB_ENV"

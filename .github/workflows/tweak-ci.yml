@@ -1,0 +1,177 @@
+# tweak-ci.yml — NuclearTweaks org-shared CI (reusable workflow)
+#
+# Called by every tweak repo (build.yml):
+#   uses: NuclearTweaks/.github/.github/workflows/tweak-ci.yml@main + secrets: inherit
+#
+# push main        → build rootless device deb → open/update release PR (version bump)
+# merged release/* → rebuild → tag vX.Y.Z → GitHub Release w/ deb → dispatch APT rebuild
+#
+# Simulator is NOT built here (by design): sim testing is local-only via
+# tools/sim-test.sh against the jailbroken JB-13mini. Actions = real-device debs only.
+# NOTE: gh steps rely on the automatically-injected default workflow token.
+
+name: tweak-ci
+
+on:
+  workflow_call:
+    secrets:
+      NUCLEAR_BOT_TOKEN:
+        description: >-
+          PAT with repo scope, allowed to repository_dispatch the APT repo. Falls
+          back to the default workflow token, which cannot cross repos — set the
+          secret on each tweak repo (new-tweak.sh does it).
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  ORG: NuclearTweaks
+  APT_REPO: NuclearTweaks.github.io
+
+jobs:
+  release-pr:
+    name: build + open release PR
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: NuclearTweaks/.github/.github/actions/setup-theos@main
+
+      - name: Build rootless device deb (sanity)
+        run: |
+          export THEOS="$HOME/theos"
+          export PATH="$THEOS/bin:$PATH"
+          COPYFILE_DISABLE=1 LDID="$LDID_BIN" make clean package FINALPACKAGE=1
+          ls -l packages/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: device-deb-preview
+          path: packages/*.deb
+          if-no-files-found: error
+
+      - name: Compute next version
+        id: version
+        run: |
+          set -euo pipefail
+          latest_tag="$(git tag -l 'v*' --sort=-v:refname | head -n1 || true)"
+          tag_ver="${latest_tag#v}"
+          ctrl_ver="$(awk -F': *' '/^Version:/{gsub(/ /,"",$2); print $2; exit}' control)"
+          is_le() { [ "$1" = "$2" ] || [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$2" ]; }
+          base="$ctrl_ver"
+          if [ -n "$latest_tag" ] && is_le "$ctrl_ver" "$tag_ver"; then base="$tag_ver"; fi
+          if [ -n "$latest_tag" ] && is_le "$base" "$tag_ver"; then
+            IFS=. read -r M m p <<<"$tag_ver"
+            msgs="$(git log "${latest_tag}..HEAD" --format='%s' || true)"
+            if printf '%s' "$msgs" | grep -qE '\[major\]|!:'; then M=$((M+1)); m=0; p=0
+            elif printf '%s' "$msgs" | grep -qE '\[minor\]'; then m=$((m+1)); p=0
+            else p=$((p+1)); fi
+            next="$M.$m.$p"
+          else
+            next="$base"
+          fi
+          echo "current=$ctrl_ver" >> "$GITHUB_OUTPUT"
+          echo "latest=$tag_ver" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "control=$ctrl_ver latest_tag=${tag_ver:-none} next=$next"
+
+      - name: Open/update release PR
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          CUR: ${{ steps.version.outputs.current }}
+          LATEST: ${{ steps.version.outputs.latest }}
+        run: |
+          set -euo pipefail
+          branch="release/v$NEXT"
+          git config user.name  "NuclearTweaks-CI"
+          git config user.email "ci@nucleartweaks.invalid"
+          git checkout -B "$branch"
+          grep -q "^Version: $NEXT$" control || sed -i '' "s/^Version: .*/Version: $NEXT/" control
+          if ! grep -q "^## $NEXT" CHANGELOG.md 2>/dev/null; then
+          RANGE="${LATEST:+$LATEST..}HEAD"
+          python3 - "$NEXT" "$RANGE" <<'PY'
+          import sys, subprocess, pathlib
+          ver, rng = sys.argv[1], sys.argv[2]
+          msgs = subprocess.run(["git","log","--no-merges","--format=* %s (`%h`)",rng],
+                                capture_output=True, text=True).stdout.strip() or f"* release {ver}"
+          p = pathlib.Path("CHANGELOG.md"); old = p.read_text() if p.exists() else "# Changelog\n"
+          head, _, body = old.partition("\n")
+          date = subprocess.run(["date","-u","+%F"],capture_output=True,text=True).stdout.strip()
+          entry = f"## {ver} — {date}\n\n{msgs}\n\n"
+          body = body.lstrip("\n# Changelog")
+          p.write_text(f"{head}\n\n{entry}{body}")
+          PY
+          fi
+          git add -A
+          git diff --cached --quiet || git commit -m "chore(release): v$NEXT [ci skip]"
+          if [ "$(git rev-list --count "origin/main..$branch")" = "0" ]; then
+            git commit --allow-empty -m "chore(release): v$NEXT (release gate) [ci skip]"
+          fi
+          git push --force origin "$branch"
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "open PR for $branch exists — branch refreshed"
+          else
+          gh pr create --base main --head "$branch" --title "release: v$NEXT" --body-file - <<PR
+          ### Automatic release PR — ${{ github.event.repository.name }} v$NEXT
+          - version: \`$CUR\` → **\`$NEXT\`** (latest tag: \`${LATEST:-none}\`)
+          - rootless device deb built + validated on the runner (see workflow run artifacts)
+          - **merge to ship**: GitHub Release + deb asset + APT repo update
+          - different bump wanted? push a commit mentioning \`[minor]\`/\`[major]\`, or edit \`control\` on this branch
+          *Sim check was local; CI covers the real-device deb only.*
+          PR
+          fi
+
+  publish:
+    name: publish release + APT
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          fetch-depth: 0
+
+      - uses: NuclearTweaks/.github/.github/actions/setup-theos@main
+
+      - name: Build final deb
+        run: |
+          export THEOS="$HOME/theos"
+          export PATH="$THEOS/bin:$PATH"
+          COPYFILE_DISABLE=1 LDID="$LDID_BIN" make clean package FINALPACKAGE=1
+          ls -l packages/
+
+      - name: Tag + GitHub Release
+        run: |
+          set -euo pipefail
+          pkg="$(awk -F': *' '/^Package:/{print $2; exit}' control)"
+          ver="$(awk -F': *' '/^Version:/{gsub(/ /,"",$2); print $2; exit}' control)"
+          tag="v$ver"
+          if git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
+            echo "tag $tag exists — assuming $tag already published"; exit 0
+          fi
+          git config user.name  "NuclearTweaks-CI"
+          git config user.email "ci@nucleartweaks.invalid"
+          git tag -a "$tag" -m "$pkg $ver"
+          git push origin "refs/tags/$tag"
+          notes="**$pkg** $ver — rootless device .deb attached. Install via APT: https://$ORG.github.io/"
+          gh release create "$tag" packages/*.deb --title "${{ github.event.repository.name }} $ver" --notes "$notes"
+
+      - name: Trigger APT repo rebuild
+        env:
+          BOT_PAT: ${{ secrets.NUCLEAR_BOT_TOKEN }}
+        run: |
+          set -uo pipefail
+          tok="${BOT_PAT:-$GITHUB_TOKEN}"
+          if gh api -X POST "repos/$ORG/$APT_REPO/dispatches" \
+               -H "Authorization: Bearer $tok" \
+               -f event_type=tweak-published \
+               -f "client_payload[repo]=$GITHUB_REPOSITORY" >/dev/null; then
+            echo "dispatched $ORG/$APT_REPO rebuild"
+          else
+            echo "::warning::APT dispatch failed (is the bot secret set on THIS repo? the APT repo's daily rebuild will still pick this up)"
+          fi
